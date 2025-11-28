@@ -6,12 +6,12 @@ from functools import partial
 import os 
 
 import requests
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, Signal, Slot, QTimer, Property, QUrl 
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, Signal, Slot, QTimer, Property, QUrl, QPoint, QSize # QSize added for button animation
 from PySide6.QtGui import QFont, QPixmap, QDesktopServices, QColor 
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                                QLineEdit, QLabel, QScrollArea, QFrame, QPushButton,
                                QSpacerItem, QSizePolicy, QMessageBox, QFormLayout, 
-                               QGraphicsOpacityEffect, QSpinBox, QColorDialog) # Added QSpinBox, QColorDialog
+                               QGraphicsOpacityEffect, QSpinBox, QColorDialog) 
 
 from io import BytesIO
 from PIL import Image
@@ -175,7 +175,51 @@ TOP_SHOWS = [
 
 
 # =================================================================================
-# SETTINGS PANEL (NEW IN-WINDOW WIDGET)
+# NEW: ANIMATED QUICK FILTER BUTTON
+# =================================================================================
+
+class AnimatedQuickFilterButton(QPushButton):
+    """A quick filter button that animates its size on hover."""
+    
+    BASE_WIDTH = 150 
+    BASE_HEIGHT = 30 
+    HOVER_SCALE = 1.1 
+
+    def __init__(self, text, slot, parent=None):
+        super().__init__(text, parent)
+        self.clicked.connect(slot)
+        self.setObjectName('quick_filter')
+        
+        # Set initial fixed size for consistent layout
+        self.setFixedSize(self.BASE_WIDTH, self.BASE_HEIGHT) 
+
+        # Animation setup
+        self.size_anim = QPropertyAnimation(self, b"size")
+        self.size_anim.setDuration(150)
+        self.size_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+
+    def enterEvent(self, event):
+        """Starts the grow animation on mouse enter."""
+        target_w = int(self.BASE_WIDTH * self.HOVER_SCALE)
+        target_h = int(self.BASE_HEIGHT * self.HOVER_SCALE)
+        
+        self.size_anim.stop()
+        self.size_anim.setStartValue(self.size())
+        self.size_anim.setEndValue(QSize(target_w, target_h))
+        self.size_anim.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Starts the shrink animation on mouse leave."""
+        self.size_anim.stop()
+        self.size_anim.setStartValue(self.size())
+        self.size_anim.setEndValue(QSize(self.BASE_WIDTH, self.BASE_HEIGHT))
+        self.size_anim.start()
+        super().leaveEvent(event)
+
+
+# =================================================================================
+# SETTINGS PANEL (In-Window Widget)
 # =================================================================================
 
 def _get_display_key(key_content: str) -> str:
@@ -376,9 +420,8 @@ class SettingsPanel(QFrame):
             _save_key_content(GEMINI_KEY_FILE, self.gemini_input.text())
             _save_key_content(OMDB_KEY_FILE, self.omdb_input.text())
 
-            # >>> FIX: Reload the key content into the global variables immediately after saving the files.
+            # Reload the key content into the global variables immediately after saving the files.
             _setup_cwd_and_load_keys(first_load=False)
-            # <<< END FIX
 
             # 2. Collect and Save Configuration (Count & Colors)
             new_config = {
@@ -400,12 +443,101 @@ class SettingsPanel(QFrame):
 
 
 # =================================================================================
-# (Rest of the original classes/functions)
+# Custom Title Bar for Dragging and Window Controls
 # =================================================================================
+class CustomTitleBar(QFrame):
+    """A custom frame that acts as a title bar for dragging and contains window controls."""
+    
+    def __init__(self, parent_window: QWidget):
+        super().__init__(parent_window)
+        self.parent_window = parent_window
+        
+        # Set a fixed height for the bar
+        self.setFixedHeight(30)
+        
+        # MODIFIED: Apply top rounding here
+        self.setStyleSheet("""
+            CustomTitleBar {
+                background-color: #2E2E2E;
+                border-top-left-radius: 20px;
+                border-top-right-radius: 20px;
+            }
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Title Label (Optional, but good for context)
+        title_label = QLabel("Movie/Show Recommender")
+        title_label.setStyleSheet("color: #AAAAAA; font-size: 11px; font-weight: normal;")
+        layout.addWidget(title_label)
+        layout.addStretch(1)
+
+        # Control Buttons Layout
+        self.min_button = self._create_control_button('—', self.parent_window.showMinimized)
+        # REMOVED: self.max_button = self._create_control_button('☐', self._toggle_maximize)
+        self.close_button = self._create_control_button('✕', self.parent_window.close)
+        self.close_button.setStyleSheet(self.close_button.styleSheet() + "QPushButton:hover { background-color: #C0392B; }") # Red hover for close
+
+        layout.addWidget(self.min_button)
+        # REMOVED: layout.addWidget(self.max_button)
+        layout.addWidget(self.close_button)
+
+        self._dragging = False
+        self._drag_pos = QPoint()
+
+    def _create_control_button(self, text: str, slot) -> QPushButton:
+        """Helper to create the minimize/maximize/close buttons."""
+        btn = QPushButton(text)
+        btn.setFixedSize(40, 30)
+        btn.clicked.connect(slot)
+        btn.setStyleSheet("""
+            QPushButton { 
+                background: transparent; /* Changed to transparent for seamless look */
+                color: #E0E0E0; 
+                border: none;
+                font-size: 16px;
+                padding-bottom: 3px;
+            }
+            QPushButton:hover { 
+                background: #4A4A4A; 
+            }
+        """)
+        return btn
+
+    # REMOVED: _toggle_maximize method is no longer needed
+
+    # --- DRAGGING LOGIC (Restricted to Title Bar) ---
+
+    def mousePressEvent(self, event):
+        """Start drag operation if left mouse button is pressed."""
+        if event.button() == Qt.LeftButton:
+            self._dragging = True
+            # Store the relative position of the mouse click within the parent window
+            self._drag_pos = event.globalPosition().toPoint() - self.parent_window.pos()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        """Move the window while dragging, only if not maximized."""
+        if self._dragging and not self.parent_window.isMaximized():
+            self.parent_window.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+        # If dragged while maximized, restore and reposition (keeping this logic for robustness)
+        elif self._dragging and self.parent_window.isMaximized():
+            self.parent_window.showNormal()
+            self.parent_window.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        """End drag operation."""
+        self._dragging = False
+        event.accept()
 
 
 # Clickable Label (Unchanged)
 class ClickableLabel(QLabel):
+    # ... (ClickableLabel remains the same)
     """A QLabel that emits a signal when clicked, carrying an associated IMDb ID."""
     clicked = Signal(str)
 
@@ -585,7 +717,6 @@ class SizePulsingSelectorButton(QPushButton):
     def __init__(self, initial=False):
         super().__init__()
         self.setMinimumSize(self.BASE_WIDTH, self.BASE_HEIGHT)
-        self.setMaximumSize(self.BASE_WIDTH, self.BASE_HEIGHT)
         
         self.setFont(QFont('Segoe UI', 10, QFont.Weight.Bold))
         self.setCursor(Qt.PointingHandCursor)
@@ -820,24 +951,36 @@ class NeonSearchWrapper(QFrame):
 class MainWindow(QWidget):
     INITIAL_TITLE_HEIGHT = 130 
     
-    # ... indices remain the same ...
-    TOP_SPACER_INDEX = 1
-    TITLE_FRAME_INDEX = 2
-    SEARCH_ROW_INDEX = 3
-    QUICK_FILTER_INDEX = 4
-    BOTTOM_SPACER_INDEX = 5
-    RESULTS_HEADER_INDEX = 6 
-    RESULTS_AREA_INDEX = 7 
-    STATUS_INDEX = 8 
+    # CustomTitleBar is the only widget at the top level
+    TITLE_BAR_INDEX = 0 
+    
+    # Indices for the internal content_layout (all elements *below* the title bar)
+    TOP_CONTENT_INDEX = 0      # Back Button and Settings Button
+    TOP_SPACER_INDEX = 1       # Spacer above title
+    TITLE_FRAME_INDEX = 2      # "What would you like to watch?"
+    SEARCH_ROW_INDEX = 3       # Search bar and selector
+    QUICK_FILTER_INDEX = 4     # Quick Filters
+    BOTTOM_SPACER_INDEX = 5    # Spacer above results header
+    RESULTS_HEADER_INDEX = 6   # Results title and More button
+    RESULTS_AREA_INDEX = 7     # Scroll area for results
+    STATUS_INDEX = 8           # Status label at the bottom
 
 
     def __init__(self):
         super().__init__()
+        
+        # --- DRAGGING/FRAMELESS SETUP ---
+        # Set the window flags to remove the native frame and enable transparency
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground) 
+        # --- DRAGGING/FRAMELESS SETUP END ---
+        
         self.setWindowTitle('Gemini Movie/Show Recommender')
         self.resize(1100, 700) 
         
+        # MODIFIED: Changed main QWidget background to transparent for rounding
         self.setStyleSheet(f"""
-        QWidget{{ background-color: #1E1E1E; color: #E0E0E0; }}
+        QWidget{{ background-color: transparent; color: #E0E0E0; }}
         
         QScrollArea {{ border: none; }}
         QScrollArea > QWidget {{ border: none; background-color: #1E1E1E; }}
@@ -851,14 +994,15 @@ class MainWindow(QWidget):
             border: 1px solid #444444; 
         }}
         QPushButton:hover {{ background: #3A3A3A; }}
+        /* MODIFIED: Quick Filter Style */
         QPushButton#quick_filter {{
-            background: #3A3A3A;
+            background: #2E2E2E; /* Darker background */
             border-radius: 8px;
             padding: 6px 14px; 
             font-size: 14px;
             border: none;
         }}
-        QPushButton#quick_filter:hover {{ background: #4A4A4A; }}
+        QPushButton#quick_filter:hover {{ background: #3A3A3A; }} /* Slightly lighter on hover */
         .card {{ background: #2E2E2E; border-radius: 12px; padding: 12px; border: none; }}
         """)
         
@@ -986,12 +1130,38 @@ class MainWindow(QWidget):
 
     def _init_layout(self):
         main = QVBoxLayout(self)
-        main.setContentsMargins(40, 40, 40, 40)
-        main.setSpacing(20)
-
-        # 0. TOP BAR LAYOUT
+        # Increased top margin to account for the new title bar
+        # CHANGE 1: Set margins to 0 for the main layout
+        main.setContentsMargins(0, 0, 0, 0) 
+        main.setSpacing(0)
+        
+        # 0. Custom Title Bar (NEW)
+        self.title_bar = CustomTitleBar(self)
+        main.addWidget(self.title_bar)
+        
+        # NEW: Central Content Frame to provide the background panel
+        self.content_frame = QFrame(self)
+        # Apply the desired dark background to this frame and add bottom rounding
+        self.content_frame.setStyleSheet("""
+            QFrame {
+                background-color: #1E1E1E;
+                border-bottom-left-radius: 20px;
+                border-bottom-right-radius: 20px;
+            }
+        """)
+        
+        # Set up the internal layout for the content frame
+        content_layout = QVBoxLayout(self.content_frame)
+        
+        # CHANGE 2: Apply original content margins to the internal layout
+        content_layout.setContentsMargins(40, 40, 40, 40) 
+        content_layout.setSpacing(20)
+        
+        
+        # 1. Top Content Bar (Back/Settings)
         top_bar_layout = QHBoxLayout()
-        top_bar_layout.setContentsMargins(0, 0, 0, 0)
+        # Reset margins for this layout as the content_layout provides left/right padding
+        top_bar_layout.setContentsMargins(0, 0, 0, 0) 
         top_bar_layout.setSpacing(0)
 
         self.back_button = QPushButton("← Back to Search")
@@ -1002,8 +1172,8 @@ class MainWindow(QWidget):
         
         top_bar_layout.addStretch(1) 
 
-        self.settings_button = QPushButton("⚙️ Settings")
-        self.settings_button.setFixedSize(90, 30)
+        self.settings_button = QPushButton("⚙️")
+        self.settings_button.setFixedSize(40, 30)
         self.settings_button.clicked.connect(self.open_settings)
         self.settings_button.setStyleSheet("""
             QPushButton { 
@@ -1017,17 +1187,17 @@ class MainWindow(QWidget):
             QPushButton:hover { background: #3A3A3A; }
         """)
         top_bar_layout.addWidget(self.settings_button)
+        
+        content_layout.addLayout(top_bar_layout) # Use content_layout
 
-        main.addLayout(top_bar_layout)
 
-
-        # 1. Top Spacer 
+        # 2. Top Spacer 
         self.top_spacer_item = QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        main.addItem(self.top_spacer_item)
-        main.setStretch(self.TOP_SPACER_INDEX, 1) 
+        content_layout.addItem(self.top_spacer_item) # Use content_layout
+        content_layout.setStretch(self.TOP_SPACER_INDEX, 1) # Use new index
 
         
-        # 2. Title Frame
+        # 3. Title Frame
         self.title_frame = QFrame()
         self.title_frame.setMaximumHeight(self.INITIAL_TITLE_HEIGHT)
         title_layout = QVBoxLayout(self.title_frame)
@@ -1044,9 +1214,9 @@ class MainWindow(QWidget):
         subtitle.setAlignment(Qt.AlignCenter)
         title_layout.addWidget(subtitle)
         
-        main.addWidget(self.title_frame)
+        content_layout.addWidget(self.title_frame) # Use content_layout
 
-        # 3. Search Bar and Selector Row
+        # 4. Search Bar and Selector Row
         search_row_layout = QHBoxLayout()
         search_row_layout.setAlignment(Qt.AlignCenter)
         
@@ -1065,21 +1235,21 @@ class MainWindow(QWidget):
         search_row_layout.addSpacing(12)
         search_row_layout.addWidget(self.selector_wrapper) 
         
-        main.addLayout(search_row_layout)
+        content_layout.addLayout(search_row_layout) # Use content_layout
         
-        # 4. Quick Filter Section
+        # 5. Quick Filter Section
         self.quick_filter_frame = QFrame()
         self.quick_filter_layout = QHBoxLayout(self.quick_filter_frame)
         self.quick_filter_layout.setAlignment(Qt.AlignCenter)
         self.quick_filter_layout.setContentsMargins(0, 0, 0, 0)
-        main.addWidget(self.quick_filter_frame)
+        content_layout.addWidget(self.quick_filter_frame) # Use content_layout
 
         self.update_quick_filters(self.selector_button._is_show)
 
-        # 5. Bottom Spacer
-        main.addStretch(1) 
+        # 6. Bottom Spacer
+        content_layout.addStretch(1) # Use content_layout
 
-        # 6. Results Header Row 
+        # 7. Results Header Row 
         results_header_layout = QHBoxLayout()
         results_header_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -1104,9 +1274,9 @@ class MainWindow(QWidget):
             QPushButton:hover { background: #5A5A5A; }
         """)
         results_header_layout.addWidget(self.more_button)
-        main.addLayout(results_header_layout) 
+        content_layout.addLayout(results_header_layout) # Use content_layout 
 
-        # 7. Results area
+        # 8. Results area
         self.results_area = QScrollArea()
         self.results_area.setWidgetResizable(True)
         self.results_container = QWidget()
@@ -1114,15 +1284,20 @@ class MainWindow(QWidget):
         self.results_layout = QVBoxLayout(self.results_container)
         self.results_layout.setAlignment(Qt.AlignTop)
         self.results_area.setWidget(self.results_container)
-        main.addWidget(self.results_area) 
-        main.setStretch(self.RESULTS_AREA_INDEX, 0) 
+        content_layout.addWidget(self.results_area) # Use content_layout
+        content_layout.setStretch(self.RESULTS_AREA_INDEX, 0) # Use new index
 
-        # 8. Status 
+        # 9. Status 
         self.status = QLabel('Ready (Movies Mode)')
         self.status.setAlignment(Qt.AlignCenter)
         self.status.setMaximumHeight(30) 
         self.status.setStyleSheet("background-color: rgba(0, 0, 0, 0); border: 0px solid transparent; color: #AAAAAA;") 
-        main.addWidget(self.status)
+        content_layout.addWidget(self.status) # Use content_layout
+        
+        # NEW: Add the central content frame to the main layout
+        main.addWidget(self.content_frame)
+        # Ensure the content frame expands to fill the space below the title bar
+        main.setStretch(1, 1)
         
     def _clear_results_cards(self):
         """Removes all widget cards currently in the results layout."""
@@ -1152,11 +1327,14 @@ class MainWindow(QWidget):
         search_type = 'TV show' if is_show else 'movie'
         
         for label, query_string in filters:
-            btn = QPushButton(label) 
-            btn.setObjectName('quick_filter')
-            
             titles_list = [t.strip() for t in query_string.split(',')]
-            btn.clicked.connect(partial(self.on_filter_search, titles_list, search_type))
+            
+            # MODIFIED: Use the new AnimatedQuickFilterButton
+            btn = AnimatedQuickFilterButton(
+                label, 
+                partial(self.on_filter_search, titles_list, search_type)
+            )
+            
             btn.setEnabled(self.api_keys_ok) 
             self.quick_filter_layout.addWidget(btn)
 
@@ -1234,10 +1412,12 @@ class MainWindow(QWidget):
         self.results_title.setVisible(True)
         self.results_title.setText(f'Recommendations ({GLOBAL_SUGGESTION_COUNT} Picks)')
         
-        main_layout = self.layout()
-        main_layout.setStretch(self.TOP_SPACER_INDEX, 0)
-        main_layout.setStretch(self.BOTTOM_SPACER_INDEX, 0)
-        main_layout.setStretch(self.RESULTS_AREA_INDEX, 1) 
+        # New: Use the content layout
+        content_layout = self.content_frame.layout()
+        # Adjusted indices
+        content_layout.setStretch(self.TOP_SPACER_INDEX, 0)
+        content_layout.setStretch(self.BOTTOM_SPACER_INDEX, 0)
+        content_layout.setStretch(self.RESULTS_AREA_INDEX, 1) 
         
 
         self._clear_results_cards()
@@ -1295,10 +1475,12 @@ class MainWindow(QWidget):
         
         self._check_api_keys(show_message_box=False)
 
-        main_layout = self.layout()
-        main_layout.setStretch(self.TOP_SPACER_INDEX, 1)
-        main_layout.setStretch(self.BOTTOM_SPACER_INDEX, 1)
-        main_layout.setStretch(self.RESULTS_AREA_INDEX, 0) 
+        # New: Use the content layout
+        content_layout = self.content_frame.layout()
+        # Adjusted indices
+        content_layout.setStretch(self.TOP_SPACER_INDEX, 1)
+        content_layout.setStretch(self.BOTTOM_SPACER_INDEX, 1)
+        content_layout.setStretch(self.RESULTS_AREA_INDEX, 0) 
         
         self.quick_filter_frame.setVisible(True)
         
